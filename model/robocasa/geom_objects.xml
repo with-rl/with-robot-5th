@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="banana_1">
+  <asset>
+  </asset>
+  <worldbody>
+    <body name="object_red_0" pos="-0.3 -0.65 1.0">
+        <joint name="object_red_0_joint" type="free" damping="0.0005" />
+        <geom type="box" size="0.02 0.02 0.02" rgba="1 0 0 1" density="100" friction="0.95 0.3 0.1" group="1" />
+    </body>
+    <body name="object_green_0" pos="-1.0 2.4 1.0">
+        <joint name="object_green_0_joint" type="free" damping="0.0005" />
+        <geom type="box" size="0.02 0.02 0.02" rgba="0 1 0 1" density="100" friction="0.95 0.3 0.1" group="1" />
+    </body>
+    <body name="object_yellow_0" pos="0.4 0.65 1.0">
+        <joint name="object_yellow_0_joint" type="free" damping="0.0005" />
+        <geom type="box" size="0.02 0.02 0.02" rgba="1 1 0 1" density="100" friction="0.95 0.3 0.1" group="1" />
+    </body>
+    <body name="object_blue_0" pos="0.6 -1.45 1.0">
+        <joint name="object_blue_0_joint" type="free" damping="0.0005" />
+        <geom type="box" size="0.02 0.02 0.02" rgba="0 0 1 1" density="100" friction="0.95 0.3 0.1" group="1" />
+    </body>
+  </worldbody>
+</mujoco>
