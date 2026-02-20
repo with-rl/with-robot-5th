@@ -70,40 +70,27 @@ def _wait_for_convergence(
 # Arm Joint Control Functions
 # ============================================================
 
-def get_arm_joint_position() -> List[float]:
-    """Get current arm joint positions [j1~j6] in radians.
-    
-    Joint order: [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate]
-    """
-    pos = simulator.get_arm_joint_position().tolist()
+def get_arm_joint_position(arm: str = 'left') -> List[float]:
+    """Get current arm joint positions [j1~j6] in radians."""
+    pos = simulator.get_arm_joint_position(arm=arm).tolist()
     return pos
 
 
 def set_arm_target_joint(
     arm_target_position: List[float],
+    arm: str = 'left',
     timeout: float = 10.0,
     verbose: bool = False
 ) -> bool:
-    """
-    Set arm target joint positions [j1~j6] in radians.
-
-    Args:
-        arm_target_position: arm target joint positions [j1~j6] in radians
-                            Order: [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate]
-        timeout: Maximum wait time in seconds (default: 10s)
-        verbose: Print convergence progress
-        
-    Returns:
-        bool: True if converged, False if timeout
-    """
+    """Set arm target joint positions [j1~j6] in radians."""
     # Update arm target position immediately (non-blocking)
-    simulator.set_arm_target_joint(arm_target_position)
+    simulator.set_arm_target_joint(arm_target_position, arm=arm)
 
     success = True
     if success and timeout > 0:
         converged = _wait_for_convergence(
-            simulator.get_arm_joint_diff,
-            simulator.get_arm_joint_velocity,
+            lambda: simulator.get_arm_joint_diff(arm=arm),
+            lambda: simulator.get_arm_joint_velocity(arm=arm),
             pos_threshold=0.1,
             vel_threshold=0.1,  # ~0.1 rad/s
             timeout=timeout,
@@ -118,40 +105,26 @@ def set_arm_target_joint(
 # End Effector Control Functions
 # ============================================================
 
-def get_ee_position() -> Tuple[List[float], List[float]]:
-    """Get current end effector pose as tuple: (position, orientation).
-    
-    Returns:
-        Tuple containing:
-            - position: [x, y, z] in meters
-            - orientation: [roll, pitch, yaw] in radians
-    """
-    pos, ori = simulator.get_ee_position()
+def get_ee_position(arm: str = 'left') -> Tuple[List[float], List[float]]:
+    """Get current end effector pose as tuple: (position, orientation)."""
+    pos, ori = simulator.get_ee_position(arm=arm)
     return pos.tolist(), ori.tolist()
 
 
 def set_ee_target_position(
     target_pos: List[float],
+    target_ori: Optional[List[float]] = None,
+    arm: str = 'left',
     timeout: float = 10.0,
     verbose: bool = False
 ) -> bool:
-    """
-    Set end effector target position in world frame.
-
-    Args:
-        target_pos: [x, y, z] target position in meters
-        timeout: Maximum wait time in seconds (default: 10.0)
-        verbose: Print convergence progress
-
-    Returns:
-        bool: True if converged, False if timeout or IK failed
-    """
-    success, joint_angles = simulator.set_ee_target_position(target_pos)
+    """Set end effector target position in world frame."""
+    success, joint_angles = simulator.set_ee_target_position(target_pos, target_ori=target_ori, arm=arm)
 
     if success and timeout > 0:
         converged = _wait_for_convergence(
-            simulator.get_arm_joint_diff,
-            simulator.get_arm_joint_velocity,
+            lambda: simulator.get_arm_joint_diff(arm=arm),
+            lambda: simulator.get_arm_joint_velocity(arm=arm),
             pos_threshold=0.1,
             vel_threshold=0.1,
             timeout=timeout,
@@ -166,38 +139,25 @@ def set_ee_target_position(
 # Gripper Control Functions
 # ============================================================
 
-def get_gripper_width() -> float:
-    """Get current gripper width in meters.
-    
-    Returns:
-        float: Current gripper width (0.004 ~ 0.074 meters)
-    """
-    return simulator.get_gripper_width()
+def get_gripper_width(arm: str = 'left') -> float:
+    """Get current gripper width in meters."""
+    return simulator.get_gripper_width(arm=arm)
 
 
 def set_target_gripper_width(
     target_width: float,
+    arm: str = 'left',
     timeout: float = 10.0,
     verbose: bool = False
 ) -> bool:
-    """
-    Set gripper target width.
-
-    Args:
-        target_width: target gripper width in meters (0.004 = closed, 0.074 = fully open)
-        timeout: Maximum wait time in seconds (default: 10.0)
-        verbose: Print convergence progress
-
-    Returns:
-        bool: True if converged, False if timeout
-    """
-    simulator.set_target_gripper_width(target_width)
+    """Set gripper target width."""
+    simulator.set_target_gripper_width(target_width, arm=arm)
 
     success = True
     if success and timeout > 0:
         converged = _wait_for_convergence(
-            simulator.get_gripper_width_diff,
-            simulator.get_gripper_width_diff,
+            lambda: [simulator.get_gripper_width_diff(arm=arm)],
+            lambda: [0.0],  # Gripper velocity not implemented, just skip Check
             pos_threshold=0.01,
             vel_threshold=0.01,
             timeout=timeout,
@@ -215,65 +175,43 @@ def set_target_gripper_width(
 
 def pick_object(
     object_pos: List[float],
+    arm: str = 'left',
     approach_height: float = 0.1,
     lift_height: float = 0.2,
     return_to_home: bool = True,
     timeout: float = 10.0,
     verbose: bool = False
 ) -> bool:
-    """
-    Pick up an object at the specified position.
-    
-    Args:
-        object_pos: [x, y, z] position of the object to pick up
-        approach_height: Height to approach the object from above (default: 0.1m)
-        lift_height: Height to lift the object after grasping (default: 0.2m)
-        return_to_home: Whether to return to home position after pick (default: True)
-        timeout: Maximum wait time per motion in seconds (default: 10.0)
-        verbose: Print progress information (default: False)
-        
-    Returns:
-        bool: True if pick succeeded, False if any step failed
-    """
+    """Pick up an object at the specified position."""
     return simulator.pick_object(
         np.array(object_pos), 
-        approach_height, 
-        lift_height, 
-        return_to_home, 
-        timeout, 
-        verbose
+        arm=arm,
+        approach_height=approach_height, 
+        lift_height=lift_height, 
+        return_to_home=return_to_home, 
+        timeout=timeout, 
+        verbose=verbose
     )
 
 
 def place_object(
     place_pos: List[float],
+    arm: str = 'left',
     approach_height: float = 0.2,
     retract_height: float = 0.3,
     return_to_home: bool = True,
     timeout: float = 10.0,
     verbose: bool = False
 ) -> bool:
-    """
-    Place an object at the specified position.
-    
-    Args:
-        place_pos: [x, y, z] position to place the object
-        approach_height: Height to approach the placement location from above (default: 0.2m)
-        retract_height: Height to retract after releasing (default: 0.3m)
-        return_to_home: Whether to return to home position after place (default: True)
-        timeout: Maximum wait time per motion in seconds (default: 10.0)
-        verbose: Print progress information (default: False)
-        
-    Returns:
-        bool: True if place succeeded, False if any step failed
-    """
+    """Place an object at the specified position."""
     return simulator.place_object(
         np.array(place_pos), 
-        approach_height, 
-        retract_height, 
-        return_to_home, 
-        timeout, 
-        verbose
+        arm=arm,
+        approach_height=approach_height, 
+        retract_height=retract_height, 
+        return_to_home=return_to_home, 
+        timeout=timeout, 
+        verbose=verbose
     )
 
 
