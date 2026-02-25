@@ -18,7 +18,7 @@ ROBOT_URL = "http://127.0.0.1:8800"
 
 # Initialize LLM
 llm = ChatFireworks(
-    model="accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
+    model="fireworks/minimax-m2p5",
     max_tokens=1000
 )
 
