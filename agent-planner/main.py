@@ -1,34 +1,34 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
-import io
-import base64
-from dotenv import load_dotenv
-from src.config.config_decomp import load_config
-from src.runner.executor import TaskExecutor
-from src.runner.runner import DecompRunner
-from src.runner.state import BaseStateMaker
 
-from fastapi import FastAPI, status, UploadFile, File
-from fastapi.responses import JSONResponse, HTMLResponse, Response
 import uvicorn
-from elevenlabs.client import ElevenLabs
+from dotenv import load_dotenv
 from elevenlabs import play
+from elevenlabs.client import ElevenLabs
+from fastapi import FastAPI, File, UploadFile, status
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from src.config import config
+from src.executor import TaskExecutor
+from src.graph import create_graph
+from src.state import make_state
 
 url = "http://127.0.0.1:8800"
 
 # Server configuration
 HOST = "0.0.0.0"  # Listen on all network interfaces
-PORT = 8900       # API server port
+PORT = 8900  # API server port
 VERSION = "0.0.1"
 
 # FastAPI application instance
 app = FastAPI(
     title="LLM Agent API",
     description="Generate Panda-Omron control code",
-    version=VERSION
+    version=VERSION,
 )
 
 # Load environment variables
@@ -38,9 +38,7 @@ load_dotenv()
 elevenlabs_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
 # Load configuration and initialize components
-config = load_config("./src/config/config_decomp.yaml")
-state_maker = BaseStateMaker(config)
-runner = DecompRunner(config=config)
+graph = create_graph(config=config)
 task_executor = TaskExecutor()
 
 
@@ -73,12 +71,12 @@ def llm_command(request: dict):
         if not user_command:
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"status": "error", "message": "No command provided"}
+                content={"status": "error", "message": "No command provided"},
             )
-        
-        state = state_maker.make(user_query=user_command)
 
-        final_state = runner.invoke(state)
+        state = make_state(user_query=user_command, config=config, url=url)
+
+        final_state = graph.invoke(state)
         task_outputs = final_state["tasks"]["task_outputs"]
 
         print("*" * 40)
@@ -91,23 +89,24 @@ def llm_command(request: dict):
 
         # Return response with session ID
         return JSONResponse(
-                status_code=status.HTTP_200_OK,
-                content={
-                    "status": "success",
-                    "user_command": user_command,
-                    "generated_code": generated_code
-                }
-            )
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "success",
+                "user_command": user_command,
+                "generated_code": generated_code,
+            },
+        )
 
     except Exception as e:
         import traceback
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "status": "error",
                 "message": str(e),
-                "traceback": traceback.format_exc()
-            }
+                "traceback": traceback.format_exc(),
+            },
         )
 
 
@@ -119,30 +118,26 @@ async def speech_to_text(audio: UploadFile = File(...)):
     """
     try:
         audio_bytes = await audio.read()
-        
+
         # Use ElevenLabs STT
         transcription = elevenlabs_client.speech_to_text.convert(
-            file=audio_bytes,
-            model_id="scribe_v1",
-            language_code="ko"
+            file=audio_bytes, model_id="scribe_v1", language_code="ko"
         )
-        
+
         return JSONResponse(
             status_code=status.HTTP_200_OK,
-            content={
-                "status": "success",
-                "text": transcription.text
-            }
+            content={"status": "success", "text": transcription.text},
         )
     except Exception as e:
         import traceback
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "status": "error",
                 "message": str(e),
-                "traceback": traceback.format_exc()
-            }
+                "traceback": traceback.format_exc(),
+            },
         )
 
 
@@ -154,44 +149,42 @@ async def text_to_speech(request: dict):
     """
     try:
         text = request.get("text", "")
-        
+
         if not text:
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"status": "error", "message": "No text provided"}
+                content={"status": "error", "message": "No text provided"},
             )
-        
+
         # Generate speech using ElevenLabs
         # Using a multilingual voice that supports Korean
         audio_generator = elevenlabs_client.text_to_speech.convert(
             text=text,
             voice_id="XB0fDUnXU5powFXDhCwa",  # Charlotte - multilingual voice
             model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128"
+            output_format="mp3_44100_128",
         )
-        
+
         # Collect audio bytes from generator
         audio_bytes = b"".join(audio_generator)
-        
+
         # Encode to base64
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
-        
+
         return JSONResponse(
             status_code=status.HTTP_200_OK,
-            content={
-                "status": "success",
-                "audio": audio_base64
-            }
+            content={"status": "success", "audio": audio_base64},
         )
     except Exception as e:
         import traceback
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "status": "error",
                 "message": str(e),
-                "traceback": traceback.format_exc()
-            }
+                "traceback": traceback.format_exc(),
+            },
         )
 
 
