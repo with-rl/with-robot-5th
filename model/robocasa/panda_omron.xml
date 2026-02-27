@@ -175,7 +175,8 @@
             <camera name="robot0_agentview_left" pos="-0.5 0.35 1.05" quat="0.556238 0.299353 -0.376787 -0.677509" fovy="60"/>
             <camera name="robot0_agentview_right" pos="-0.5 -0.35 1.05" quat="0.677509 0.376787 -0.299353 -0.556239" fovy="60"/>
             <camera name="robot0_frontview" pos="-0.5 0 0.95" quat="0.608894 0.381468 -0.367391 -0.590555" fovy="60"/>
-
+            <!-- Robot Head Camera -->
+            <camera name="robot0_head_camera" pos="0.05 0 0.9" xyaxes="0 -1 0 0.5 0 0.866" fovy="75"/>
 
             <!-- Panda Arm: 7-DOF manipulator -->
             <body name="robot0_link0">

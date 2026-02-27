@@ -2,6 +2,7 @@
 
 import time
 import numpy as np
+import threading
 import mujoco, mujoco.viewer
 from scipy.spatial.transform import Rotation as R
 from typing import Optional, List, Tuple
@@ -157,6 +158,14 @@ class MujocoSimulator:
         self._floor_geom_id = None
         self._floor_size = None
         self._floor_pos = None
+
+        # Remove renderers from Main Thread init completely to avoid macOS OpenGL thread violations
+        self.renderer = None
+        self.depth_renderer = None
+        self._requested_camera = None
+        self._render_event = threading.Event()
+        self.latest_rgb = None
+        self.latest_depth = None
 
         # Compute forward kinematics
         mujoco.mj_forward(self.model, self.data)
@@ -756,11 +765,39 @@ class MujocoSimulator:
         return GridMapUtils.grid_to_world(grid_pos, floor_pos, self.grid_map.shape, grid_size)
 
     # ============================================================
+    # Camera / Sensor Methods
+    # ============================================================
+
+    def get_camera_image(self, camera_name: str = "robot0_head_camera") -> Optional[np.ndarray]:
+        """Get an RGB image from the specified camera."""
+        return self.get_camera_rgbd(camera_name)[0]
+
+    def get_camera_depth(self, camera_name: str = "robot0_head_camera") -> Optional[np.ndarray]:
+        """Get a Depth image (distance in meters) from the specified camera."""
+        return self.get_camera_rgbd(camera_name)[1]
+
+    def get_camera_rgbd(self, camera_name: str = "robot0_head_camera") -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Get both RGB and Depth images safely by delegating the render request to the simulator thread."""
+        self.latest_rgb = None
+        self.latest_depth = None
+        self._requested_camera = camera_name
+        self._render_event.clear()
+        
+        # Wait until the simulator thread picks it up and renders (up to 2 seconds)
+        self._render_event.wait(timeout=2.0)
+        return self.latest_rgb, self.latest_depth
+
+    # ============================================================
     # Simulation Loop
     # ============================================================
 
     def run(self) -> None:
         """Run simulation with 3D viewer and PD control loop (blocking)."""
+        # MAC OS MUST HAVE OPENGL INITIALIZED ON THE RENDER/SIM THREAD!
+        self.renderer = mujoco.Renderer(self.model, height=480, width=640)
+        self.depth_renderer = mujoco.Renderer(self.model, height=480, width=640)
+        self.depth_renderer.enable_depth_rendering()
+
         with mujoco.viewer.launch_passive(self.model, self.data) as v:
             # Camera setup
             v.cam.lookat[:] = RobotConfig.CAM_LOOKAT
@@ -780,7 +817,8 @@ class MujocoSimulator:
             v.opt.label = mujoco.mjtLabel.mjLABEL_NONE
 
             # Main loop
-            while v.is_running():
+            self.is_running = True
+            while v.is_running() and self.is_running:
                 # mobile base control
                 mobile_control = self._compute_mobile_control()
                 self.data.ctrl[self.mobile_actuator_ids[0]] = mobile_control[0]
@@ -798,4 +836,43 @@ class MujocoSimulator:
                     self.data.ctrl[actuator_id] = gripper_control[i]
 
                 mujoco.mj_step(self.model, self.data)
+                
+                # Handle async camera rendering safely within context
+                if self._requested_camera is not None:
+                    try:
+                        # 1. Save original transparency values
+                        old_rgba = self.model.geom_rgba.copy()
+                        
+                        # 2. Hide robot geometries by setting alpha to 0.0
+                        for i in range(self.model.ngeom):
+                            body_id = self.model.geom_bodyid[i]
+                            body_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+                            if body_name and any(x in body_name for x in ["robot0", "gripper0", "mobilebase0"]):
+                                self.model.geom_rgba[i][3] = 0.0
+                                
+                        # 3. Render (transparent objects are completely hidden because mjVIS_TRANSPARENT = False)
+                        self.renderer.update_scene(self.data, camera=self._requested_camera, scene_option=v.opt)
+                        self.latest_rgb = self.renderer.render().copy()
+                        
+                        self.depth_renderer.update_scene(self.data, camera=self._requested_camera, scene_option=v.opt)
+                        self.latest_depth = self.depth_renderer.render().copy()
+                        
+                    except Exception as e:
+                        print(f"[Renderer Error]: {e}")
+                    finally:
+                        # 4. Restore original visibility so the main viewer stays intact
+                        self.model.geom_rgba[:] = old_rgba
+                        
+                    self._requested_camera = None
+                    self._render_event.set()
+
                 v.sync()
+                # Sleep briefly to free the Python GIL, allowing FastAPI to answer requests
+                time.sleep(self.dt)
+
+    def close(self) -> None:
+        """Signal the simulator to shut down gracefully."""
+        self.is_running = False
+        # Set the event in case the thread is waiting for the camera
+        if hasattr(self, '_render_event'):
+            self._render_event.set()
