@@ -104,6 +104,40 @@ class MujocoSimulator:
     def place_object(self, *args, arm: str = 'left', **kwargs) -> bool:
         return self._get_arm(arm).place_object(*args, **kwargs)
 
+    def get_rel_pose(self, leader: str = 'left', follower: str = 'right') -> np.ndarray:
+        """파지 직후 두 EE 간 상대 포즈 dq_rel 계산. dq_rel = conj(dq_leader) * dq_follower"""
+        from arm_controller import _mat_pos_to_dq, _dq_mul, _dq_conj
+        leader_arm  = self._get_arm(leader)
+        follower_arm = self._get_arm(follower)
+
+        leader_pos,   leader_ori   = leader_arm.get_ee_position()
+        follower_pos, follower_ori = follower_arm.get_ee_position()
+
+        leader_mat   = R.from_euler("xyz", leader_ori).as_matrix()
+        follower_mat = R.from_euler("xyz", follower_ori).as_matrix()
+
+        dq_leader   = _mat_pos_to_dq(leader_mat,   leader_pos)
+        dq_follower = _mat_pos_to_dq(follower_mat, follower_pos)
+        return _dq_mul(_dq_conj(dq_leader), dq_follower)
+
+    def bimanual_move_object(
+        self,
+        target_pos: np.ndarray,
+        target_ori: np.ndarray,
+        dq_rel: np.ndarray,
+        leader: str = 'left',
+        follower: str = 'right',
+        timeout: float = 10.0,
+        verbose: bool = False
+    ) -> Tuple[bool, bool]:
+        """양팔이 강체를 유지하며 목표 포즈로 동시 이동."""
+        leader_arm   = self._get_arm(leader)
+        follower_arm = self._get_arm(follower)
+        return leader_arm.bimanual_move_object(
+            follower_arm, target_pos, target_ori, dq_rel,
+            timeout=timeout, verbose=verbose
+        )
+
     # ============================================================
     # Object Interaction Methods
     # ============================================================

@@ -121,4 +121,34 @@ print("--- 10. Return right arm to Home position (Holding object) ---")
 run_step("set_arm_target_joint([0.0, -0.96, 1.16, 0.0, -0.3, 0.0], arm='right', timeout=5.0)")
 print("✨ --- Handover Sequence Completed --- ✨")
 
+# ==========================================
+# Dual Quaternion Control
+# ==========================================
+
+# %%
+print("--- [Prep 1] Fetching cube position from environment ---")
+env_data = requests.get(f"{BASE_URL}/env").json()
+obj_pos = env_data['objects']['object_red_0']['pos']
+obj_pos
+
+# %%
+print("--- [Prep 2] Left arm: Picking up object and moving to center ---")
+
+run_step(f"set_target_gripper_width(0.074, arm='left', verbose=True)")
+target_ori = [float(f) for f in np.array([0, np.pi/2, 0])]
+approach_pos = [float(f) for f in np.array([obj_pos[0] - 0.15, obj_pos[1], obj_pos[2] + 0.1])]
+run_step(f"set_ee_target_position({approach_pos}, target_ori={target_ori}, arm='left', verbose=True)")
+pick_pos = [float(f) for f in np.array([obj_pos[0] - 0.15, obj_pos[1], obj_pos[2]])]
+run_step(f"set_ee_target_position({pick_pos}, target_ori={target_ori}, arm='left', verbose=True)")
+
+# %%
+run_step(f"set_target_gripper_width(0.074, arm='right', verbose=True)")
+target_ori = [float(f) for f in np.array([0, np.pi/2, 0])]
+approach_pos = [float(f) for f in np.array([obj_pos[0] + 0.15, obj_pos[1], obj_pos[2] + 0.1])]
+run_step(f"set_ee_target_position({approach_pos}, target_ori={target_ori}, arm='right', verbose=True)")
+pick_pos = [float(f) for f in np.array([obj_pos[0] + 0.15, obj_pos[1], obj_pos[2]])]
+run_step(f"set_ee_target_position({pick_pos}, target_ori={target_ori}, arm='right', verbose=True)")
+
+# %%
+run_step(f"set_target_gripper_width(0.0, arm='left', verbose=True)")
 # %%

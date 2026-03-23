@@ -119,7 +119,10 @@ def set_ee_target_position(
     verbose: bool = False
 ) -> bool:
     """Set end effector target position in world frame."""
+    print(target_pos, target_ori)
     success, joint_angles = simulator.set_ee_target_position(target_pos, target_ori=target_ori, arm=arm)
+    print(success)
+    print(joint_angles)
 
     if success and timeout > 0:
         converged = _wait_for_convergence(

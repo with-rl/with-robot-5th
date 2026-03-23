@@ -5,7 +5,7 @@
   <worldbody>
     <body name="object_red_0" pos="0.0 0.0 1.0">
         <joint name="object_red_0_joint" type="free" damping="0.0005" />
-        <geom type="box" size="0.015 0.015 0.015" rgba="1 0 0 1" density="1000" group="1"
+        <geom type="box" size="0.2 0.015 0.015" rgba="1 0 0 1" density="1000" group="1"
               friction="2.0 0.5 0.1" condim="6" solref="0.01 1" solimp="0.998 0.998 0.001"/>
     </body>
   </worldbody>

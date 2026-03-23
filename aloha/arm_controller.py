@@ -1,10 +1,56 @@
 import time
 import numpy as np
 import mujoco
-from scipy.spatial.transform import Rotation as R
 from typing import Optional, Tuple
+from scipy.spatial.transform import Rotation as R
 
 from config import RobotConfig
+
+
+# ============================================================
+# Dual Quaternion 유틸리티
+# ============================================================
+
+def _quat_mul(q1, q2):
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ])
+
+def _dq_mul(dq1, dq2):
+    r1, d1 = dq1[:4], dq1[4:]
+    r2, d2 = dq2[:4], dq2[4:]
+    return np.concatenate([
+        _quat_mul(r1, r2),
+        _quat_mul(r1, d2) + _quat_mul(d1, r2),
+    ])
+
+def _dq_conj(dq):
+    r, d = dq[:4], dq[4:]
+    return np.concatenate([
+        [r[0], -r[1], -r[2], -r[3]],
+        [d[0], -d[1], -d[2], -d[3]],
+    ])
+
+def _mat_pos_to_dq(rot: np.ndarray, pos: np.ndarray) -> np.ndarray:
+    """3x3 회전행렬 + 위치벡터 → 듀얼 쿼터니언"""
+    from scipy.spatial.transform import Rotation as R
+    q_r = R.from_matrix(rot).as_quat()          # [x, y, z, w]
+    q_r = np.array([q_r[3], q_r[0], q_r[1], q_r[2]])  # → [w, x, y, z]
+    q_d = 0.5 * _quat_mul(np.array([0, *pos]), q_r)
+    return np.concatenate([q_r, q_d])
+
+def _dq_error_to_6d(dq_err: np.ndarray) -> np.ndarray:
+    """dq_error → [pos_error(3), ori_error(3)]"""
+    ori_error = 2.0 * dq_err[1:4]
+    # 정확한 위치 추출: t = 2 * q_d * conj(q_r)
+    q_r_conj = np.array([dq_err[0], -dq_err[1], -dq_err[2], -dq_err[3]])
+    pos_error = 2.0 * _quat_mul(dq_err[4:], q_r_conj)[1:]
+    return np.concatenate([pos_error, ori_error])
 
 
 class ArmController:
@@ -134,6 +180,7 @@ class ArmController:
 
     @staticmethod
     def _rotation_matrix_to_euler_xyz(rot: np.ndarray) -> np.ndarray:
+        from scipy.spatial.transform import Rotation as R
         return R.from_matrix(rot.reshape(3, 3)).as_euler("xyz")
 
     def get_ee_position(self, data: Optional[mujoco.MjData] = None) -> Tuple[np.ndarray, np.ndarray]:
@@ -153,6 +200,24 @@ class ArmController:
         jacp_arm = jacp[:, self.arm_dof_indices]
         jacr_arm = jacr[:, self.arm_dof_indices]
         return np.vstack([jacp_arm, jacr_arm])
+
+    def _compute_dq_jacobian(self, data: Optional[mujoco.MjData] = None) -> np.ndarray:
+        """
+        Screw (DQ) Jacobian: 6×n, 각 컬럼 = [p_i × n_i; n_i]
+        출력: [pos(3); ori(3)] 순서 → _dq_error_to_6d 반환 순서와 일치
+        """
+        if data is None:
+            data = self.data
+        n = len(self.arm_joint_ids)
+        J = np.zeros((6, n))
+        ee_pos = data.site_xpos[self.ee_site_id]
+        for i, joint_id in enumerate(self.arm_joint_ids):
+            dof_adr = self.model.jnt_dofadr[joint_id]
+            n_i = data.xaxis[dof_adr]         # 월드 프레임 관절 축
+            p_i = data.xanchor[dof_adr]       # 월드 프레임 관절 위치
+            J[:3, i] = np.cross(n_i, ee_pos - p_i)  # 이동 기여: n × (p_ee - p_i)
+            J[3:, i] = n_i                    # 회전 기여 (ori)
+        return J
 
     def _solve_ik_position(
         self, 
@@ -174,6 +239,9 @@ class ArmController:
         else:
             target_mat = R.from_euler("xyz", target_ori).as_matrix()
 
+        # --- Dual Quaternion 기반 오차 계산 ---
+        dq_target = _mat_pos_to_dq(target_mat, target_pos)
+
         for _ in range(max_iterations):
             for i, joint_id in enumerate(self.arm_joint_ids):
                 qpos_adr = self.model.jnt_qposadr[joint_id]
@@ -182,13 +250,13 @@ class ArmController:
 
             current_pos = ik_data.site_xpos[self.ee_site_id].copy()
             current_mat = ik_data.site_xmat[self.ee_site_id].copy().reshape(3, 3)
-            
+
             pos_error = target_pos - current_pos
             err_rot = R.from_matrix(target_mat @ current_mat.T)
             ori_error = err_rot.as_rotvec()
             error = np.concatenate([pos_error, ori_error])
 
-            if (np.linalg.norm(pos_error) < RobotConfig.IK_POSITION_TOLERANCE and 
+            if (np.linalg.norm(pos_error) < RobotConfig.IK_POSITION_TOLERANCE and
                 np.linalg.norm(ori_error) < RobotConfig.IK_ORIENTATION_TOLERANCE):
                 return True, q
 
@@ -337,6 +405,65 @@ class ArmController:
 
         if verbose: print("  Place sequence completed successfully!")
         return True
+
+    def bimanual_move_object(
+        self,
+        other_arm: 'ArmController',
+        target_pos: np.ndarray,
+        target_ori: np.ndarray,
+        dq_rel: np.ndarray,
+        timeout: float = 10.0,
+        verbose: bool = False
+    ) -> Tuple[bool, bool]:
+        """두 팔이 물체를 잡은 상태에서 목표 포즈로 이동.
+
+        Args:
+            other_arm: follower 팔
+            target_pos: leader(self) EE 목표 위치
+            target_ori: leader(self) EE 목표 방향 (euler xyz)
+            dq_rel: 두 EE 간 고정 상대 포즈 (잡는 순간 측정값)
+            timeout: 수렴 대기 시간
+            verbose: 진행 상황 출력
+
+        Returns:
+            (leader 성공, follower 성공)
+        """
+        from scipy.spatial.transform import Rotation as R
+
+        # leader IK
+        if verbose: print("  [bimanual] Leader arm solving IK...")
+        success_leader, _ = self.set_ee_target_position(target_pos, target_ori=target_ori)
+        if not success_leader:
+            if verbose: print("  [bimanual] Leader IK failed")
+            return False, False
+
+        # follower 목표 계산: dq_follower = dq_leader * dq_rel
+        target_mat = R.from_euler("xyz", target_ori).as_matrix()
+        dq_leader = _mat_pos_to_dq(target_mat, target_pos)
+        dq_follower = _dq_mul(dq_leader, dq_rel)
+
+        # follower DQ → pos, ori 추출
+        q_r = dq_follower[:4]
+        q_r_conj = np.array([q_r[0], -q_r[1], -q_r[2], -q_r[3]])
+        follower_pos = 2.0 * _quat_mul(dq_follower[4:], q_r_conj)[1:]
+        follower_ori = R.from_quat([q_r[1], q_r[2], q_r[3], q_r[0]]).as_euler("xyz")
+
+        # follower IK
+        if verbose: print("  [bimanual] Follower arm solving IK...")
+        success_follower, _ = other_arm.set_ee_target_position(follower_pos, target_ori=follower_ori)
+        if not success_follower:
+            if verbose: print("  [bimanual] Follower IK failed")
+            return success_leader, False
+
+        # 두 팔 수렴 대기
+        conv_leader   = self._wait_for_arm_convergence(timeout)
+        conv_follower = other_arm._wait_for_arm_convergence(timeout)
+
+        if verbose:
+            print(f"  [bimanual] Leader: {'OK' if conv_leader else 'TIMEOUT'}, "
+                  f"Follower: {'OK' if conv_follower else 'TIMEOUT'}")
+
+        return conv_leader, conv_follower
 
     def update_control_loop(self) -> None:
         """Apply computed targets to the simulator data (called every step)."""
