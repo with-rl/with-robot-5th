@@ -1,5 +1,6 @@
 """FastAPI server for MuJoCo robot simulation with REST API control."""
 
+import os
 import time
 import queue
 import threading
@@ -63,8 +64,6 @@ def read_root() -> Dict[str, str]:
     return {"name": "MuJoCo Robot Simulator", "version": VERSION, "status": "running"}
 
 
-import os
-
 @app.on_event("shutdown")
 def shutdown_event():
     """Triggered when the server exits (e.g., Ctrl+C), kills simulator thread."""
@@ -88,6 +87,24 @@ def get_environment():
     return {
         "timestamp": time.time(),
         "objects": objects,
+    }
+
+
+@app.get("/state")
+def get_state():
+    """Get current robot state: mobile base pose and arm joint positions."""
+    mobile_pos = simulator.get_mobile_position()
+    arm_joints = simulator.get_arm_joint_position()
+    return {
+        "timestamp": time.time(),
+        "mobile": {
+            "x": float(mobile_pos[0]),
+            "y": float(mobile_pos[1]),
+            "theta": float(mobile_pos[2]),
+        },
+        "arm": {
+            "joints": arm_joints.tolist(),
+        },
     }
 
 
