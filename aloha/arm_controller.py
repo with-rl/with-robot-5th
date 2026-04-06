@@ -79,6 +79,10 @@ class ArmController:
         self._arm_error_integral = np.zeros(6,)
         self.default_ee_target_ori = default_ee_target_ori
 
+        # Cross-arm collision avoidance
+        self._other_arm: Optional['ArmController'] = None
+        self._arm_prefix = joint_names[0].split('/')[0] + '/'  # e.g. "left/" or "right/"
+
         # Resolve arm joint IDs and actuator IDs
         self.arm_joint_ids = [mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name) for name in joint_names]
         self.arm_actuator_ids = [mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, name) for name in actuator_names]
@@ -105,6 +109,26 @@ class ArmController:
         if joint_type == mujoco.mjtJoint.mjJNT_BALL: return 3
         if joint_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE): return 1
         raise ValueError(f"Unsupported joint type for joint_id {joint_id}")
+
+    def set_other_arm(self, other_arm: 'ArmController') -> None:
+        """상대 팔 레퍼런스를 등록해 cross-arm 충돌 체크를 활성화."""
+        self._other_arm = other_arm
+
+    def _has_cross_arm_collision(self, ik_data: mujoco.MjData) -> bool:
+        """ik_data의 contact 목록에서 양팔 간 충돌 여부 확인."""
+        if self._other_arm is None:
+            return False
+        other_prefix = self._other_arm._arm_prefix
+        for i in range(ik_data.ncon):
+            contact = ik_data.contact[i]
+            g1_body = self.model.geom_bodyid[contact.geom1]
+            g2_body = self.model.geom_bodyid[contact.geom2]
+            n1 = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, g1_body) or ''
+            n2 = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, g2_body) or ''
+            if ((n1.startswith(self._arm_prefix) and n2.startswith(other_prefix)) or
+                    (n2.startswith(self._arm_prefix) and n1.startswith(other_prefix))):
+                return True
+        return False
 
     def reset_to_init(self, init_position: np.ndarray, init_gripper_width: float) -> None:
         """Force the joint states to the initial configuration."""
@@ -242,11 +266,17 @@ class ArmController:
         # --- Dual Quaternion 기반 오차 계산 ---
         dq_target = _mat_pos_to_dq(target_mat, target_pos)
 
+        q_safe = q.copy()
         for _ in range(max_iterations):
             for i, joint_id in enumerate(self.arm_joint_ids):
                 qpos_adr = self.model.jnt_qposadr[joint_id]
                 ik_data.qpos[qpos_adr] = q[i]
             mujoco.mj_forward(self.model, ik_data)
+
+            # Cross-arm 충돌 감지: 모든 링크 포함
+            if self._has_cross_arm_collision(ik_data):
+                q = q_safe  # 마지막 안전한 관절 각도로 복구
+                break
 
             current_pos = ik_data.site_xpos[self.ee_site_id].copy()
             current_mat = ik_data.site_xmat[self.ee_site_id].copy().reshape(3, 3)
@@ -260,6 +290,7 @@ class ArmController:
                 np.linalg.norm(ori_error) < RobotConfig.IK_ORIENTATION_TOLERANCE):
                 return True, q
 
+            q_safe = q.copy()
             jacobian = self._compute_ee_jacobian(ik_data)
             jjt = jacobian @ jacobian.T
             damping = (RobotConfig.IK_DAMPING ** 2) * np.eye(jacobian.shape[0])
@@ -269,6 +300,38 @@ class ArmController:
             q = np.clip(q, RobotConfig.ARM_JOINT_LIMITS[:, 0], RobotConfig.ARM_JOINT_LIMITS[:, 1])
 
         return False, q
+
+    def _check_trajectory_collision(self, q_target: np.ndarray, n_steps: int = 20) -> bool:
+        """현재 관절각 → q_target 까지 선형 보간한 궤적 전체에서 cross-arm 충돌 체크.
+
+        Returns:
+            True  — 궤적 중 충돌 구간 존재
+            False — 궤적 전체 안전
+        """
+        if self._other_arm is None:
+            return False
+
+        q_curr = self.get_arm_joint_position()
+        traj_data = mujoco.MjData(self.model)
+
+        for step in range(1, n_steps + 1):   # step=0(현재 위치)은 이미 안전하다고 가정
+            t = step / n_steps
+            q_interp = (1.0 - t) * q_curr + t * q_target
+
+            traj_data.qpos[:] = self.data.qpos[:]   # 상대 팔 현재 상태 유지
+            for i, joint_id in enumerate(self.arm_joint_ids):
+                traj_data.qpos[self.model.jnt_qposadr[joint_id]] = q_interp[i]
+
+            mujoco.mj_forward(self.model, traj_data)
+
+            if self._has_cross_arm_collision(traj_data):
+                q_interp_deg = np.round(np.degrees(q_interp), 1)
+                print(f"  [{self._arm_prefix.strip('/')}] 궤적 충돌 감지 "
+                      f"step={step}/{n_steps} (t={t:.2f}) "
+                      f"q={q_interp_deg}")
+                return True   # 궤적 중 충돌
+
+        return False   # 안전
 
     def set_ee_target_position(self, target_pos: np.ndarray, target_ori: Optional[np.ndarray] = None) -> Tuple[bool, np.ndarray]:
         success, joint_angles = self._solve_ik_position(target_pos, target_ori=target_ori)

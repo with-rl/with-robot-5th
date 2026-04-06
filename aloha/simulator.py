@@ -53,6 +53,10 @@ class MujocoSimulator:
             default_ee_target_ori=RobotConfig.RIGHT_ARM_DEFAULT_TARGET_ORI
         )
 
+        # Cross-arm 충돌 체크를 위해 서로 레퍼런스 등록
+        self.left_arm.set_other_arm(self.right_arm)
+        self.right_arm.set_other_arm(self.left_arm)
+
         # Compute initial forward kinematics
         mujoco.mj_forward(self.model, self.data)
 

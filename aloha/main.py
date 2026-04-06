@@ -210,7 +210,7 @@ def main() -> None:
     print("=" * 60 + "\n")
 
     # Start FastAPI server (blocking call)
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="warning", access_log=False)
 
 
 if __name__ == "__main__":
