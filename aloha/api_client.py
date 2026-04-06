@@ -129,26 +129,74 @@ print("✨ --- Handover Sequence Completed --- ✨")
 print("--- [Prep 1] Fetching cube position from environment ---")
 env_data = requests.get(f"{BASE_URL}/env").json()
 obj_pos = env_data['objects']['object_red_0']['pos']
-obj_pos
+print(f"Object pos={obj_pos}")
 
 # %%
-print("--- [Prep 2] Left arm: Picking up object and moving to center ---")
-
-run_step(f"set_target_gripper_width(0.074, arm='left', verbose=True)")
-target_ori = [float(f) for f in np.array([0, np.pi/2, 0])]
-approach_pos = [float(f) for f in np.array([obj_pos[0] - 0.15, obj_pos[1], obj_pos[2] + 0.1])]
-run_step(f"set_ee_target_position({approach_pos}, target_ori={target_ori}, arm='left', verbose=True)")
-pick_pos = [float(f) for f in np.array([obj_pos[0] - 0.15, obj_pos[1], obj_pos[2]])]
-run_step(f"set_ee_target_position({pick_pos}, target_ori={target_ori}, arm='left', verbose=True)")
-
-# %%
-run_step(f"set_target_gripper_width(0.074, arm='right', verbose=True)")
-target_ori = [float(f) for f in np.array([0, np.pi/2, 0])]
+print("--- [Prep 2] Right arm: open gripper → approach → pick ---")
+target_ori_right = [float(f) for f in np.array([0, np.pi/2, np.pi])]
+run_step(f"set_target_gripper_width(0.074, arm='right')")
 approach_pos = [float(f) for f in np.array([obj_pos[0] + 0.15, obj_pos[1], obj_pos[2] + 0.1])]
-run_step(f"set_ee_target_position({approach_pos}, target_ori={target_ori}, arm='right', verbose=True)")
+run_step(f"set_ee_target_position({approach_pos}, target_ori={target_ori_right}, arm='right', verbose=True)")
 pick_pos = [float(f) for f in np.array([obj_pos[0] + 0.15, obj_pos[1], obj_pos[2]])]
-run_step(f"set_ee_target_position({pick_pos}, target_ori={target_ori}, arm='right', verbose=True)")
+run_step(f"set_ee_target_position({pick_pos}, target_ori={target_ori_right}, arm='right', verbose=True)")
 
 # %%
-run_step(f"set_target_gripper_width(0.0, arm='left', verbose=True)")
+print("--- [Prep 3] Left arm: open gripper → approach → pick ---")
+target_ori_left = [float(f) for f in np.array([0, np.pi/2, 0])]
+run_step(f"set_target_gripper_width(0.074, arm='left')")
+approach_pos = [float(f) for f in np.array([obj_pos[0] - 0.15, obj_pos[1], obj_pos[2] + 0.1])]
+run_step(f"set_ee_target_position({approach_pos}, target_ori={target_ori_left}, arm='left', verbose=True)")
+pick_pos = [float(f) for f in np.array([obj_pos[0] - 0.15, obj_pos[1], obj_pos[2]])]
+run_step(f"set_ee_target_position({pick_pos}, target_ori={target_ori_left}, arm='left', verbose=True)")
+run_step(f"set_target_gripper_width(0.015, arm='left')")
+
 # %%
+print("\n--- [Bimanual] 상대 포즈 측정 ---")
+rel = requests.get(f"{BASE_URL}/bimanual/rel_pose", params={"leader": "left", "follower": "right"}).json()
+dq_rel = rel['dq_rel']
+print(f"dq_rel={np.round(dq_rel, 4)}")
+
+# %%
+print("--- [Bimanual] 양팔 동시 이동: z+0.1 들어올리기 ---")
+left = requests.get(f"{BASE_URL}/arm/state", params={"arm": "left"}).json()
+lift_pos = (np.array(left['ee_position']) + np.array([0, 0, 0.1])).tolist()
+lift_ori = left['ee_orientation']
+print(requests.post(f"{BASE_URL}/bimanual/move", json={
+    "target_pos": lift_pos, "target_ori": lift_ori, "dq_rel": dq_rel,
+    "leader": "left", "follower": "right", "timeout": 10.0, "verbose": True,
+}).json())
+
+# %%
+print("--- [Bimanual] 양팔 동시 이동: 작은 원 그리기 (YZ 평면) ---")
+left = requests.get(f"{BASE_URL}/arm/state", params={"arm": "left"}).json()
+center = np.array(left['ee_position'])
+base_ori = left['ee_orientation']
+radius, steps = 0.05, 16
+for i in range(steps + 1):
+    angle = 2 * math.pi * i / steps
+    target_pos = (center + np.array([0, radius * math.cos(angle), radius * math.sin(angle)])).tolist()
+    print(f"  step {i:2d} | angle={math.degrees(angle):5.1f}° | pos={np.round(target_pos, 3)}")
+    result = requests.post(f"{BASE_URL}/bimanual/move", json={
+        "target_pos": target_pos, "target_ori": base_ori, "dq_rel": dq_rel,
+        "leader": "left", "follower": "right", "timeout": 5.0,
+    }).json()
+    print(f"         → {result}")
+
+# %%
+print("--- [Bimanual] 양팔 동시 이동: 작은 원 그리기 (XY 평면, 수평) ---")
+left = requests.get(f"{BASE_URL}/arm/state", params={"arm": "left"}).json()
+center = np.array(left['ee_position'])
+base_ori = left['ee_orientation']
+radius, steps = 0.05, 16
+for i in range(steps + 1):
+    angle = 2 * math.pi * i / steps
+    target_pos = (center + np.array([radius * math.cos(angle), radius * math.sin(angle), 0])).tolist()
+    print(f"  step {i:2d} | angle={math.degrees(angle):5.1f}° | pos={np.round(target_pos, 3)}")
+    result = requests.post(f"{BASE_URL}/bimanual/move", json={
+        "target_pos": target_pos, "target_ori": base_ori, "dq_rel": dq_rel,
+        "leader": "left", "follower": "right", "timeout": 5.0,
+    }).json()
+    print(f"         → {result}")
+
+# %%
+
