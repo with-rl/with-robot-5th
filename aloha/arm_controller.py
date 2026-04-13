@@ -29,28 +29,12 @@ def _dq_mul(dq1, dq2):
         _quat_mul(r1, d2) + _quat_mul(d1, r2),
     ])
 
-def _dq_conj(dq):
-    r, d = dq[:4], dq[4:]
-    return np.concatenate([
-        [r[0], -r[1], -r[2], -r[3]],
-        [d[0], -d[1], -d[2], -d[3]],
-    ])
-
 def _mat_pos_to_dq(rot: np.ndarray, pos: np.ndarray) -> np.ndarray:
     """3x3 회전행렬 + 위치벡터 → 듀얼 쿼터니언"""
-    from scipy.spatial.transform import Rotation as R
     q_r = R.from_matrix(rot).as_quat()          # [x, y, z, w]
     q_r = np.array([q_r[3], q_r[0], q_r[1], q_r[2]])  # → [w, x, y, z]
     q_d = 0.5 * _quat_mul(np.array([0, *pos]), q_r)
     return np.concatenate([q_r, q_d])
-
-def _dq_error_to_6d(dq_err: np.ndarray) -> np.ndarray:
-    """dq_error → [pos_error(3), ori_error(3)]"""
-    ori_error = 2.0 * dq_err[1:4]
-    # 정확한 위치 추출: t = 2 * q_d * conj(q_r)
-    q_r_conj = np.array([dq_err[0], -dq_err[1], -dq_err[2], -dq_err[3]])
-    pos_error = 2.0 * _quat_mul(dq_err[4:], q_r_conj)[1:]
-    return np.concatenate([pos_error, ori_error])
 
 
 class ArmController:
@@ -204,7 +188,6 @@ class ArmController:
 
     @staticmethod
     def _rotation_matrix_to_euler_xyz(rot: np.ndarray) -> np.ndarray:
-        from scipy.spatial.transform import Rotation as R
         return R.from_matrix(rot.reshape(3, 3)).as_euler("xyz")
 
     def get_ee_position(self, data: Optional[mujoco.MjData] = None) -> Tuple[np.ndarray, np.ndarray]:
@@ -225,24 +208,6 @@ class ArmController:
         jacr_arm = jacr[:, self.arm_dof_indices]
         return np.vstack([jacp_arm, jacr_arm])
 
-    def _compute_dq_jacobian(self, data: Optional[mujoco.MjData] = None) -> np.ndarray:
-        """
-        Screw (DQ) Jacobian: 6×n, 각 컬럼 = [p_i × n_i; n_i]
-        출력: [pos(3); ori(3)] 순서 → _dq_error_to_6d 반환 순서와 일치
-        """
-        if data is None:
-            data = self.data
-        n = len(self.arm_joint_ids)
-        J = np.zeros((6, n))
-        ee_pos = data.site_xpos[self.ee_site_id]
-        for i, joint_id in enumerate(self.arm_joint_ids):
-            dof_adr = self.model.jnt_dofadr[joint_id]
-            n_i = data.xaxis[dof_adr]         # 월드 프레임 관절 축
-            p_i = data.xanchor[dof_adr]       # 월드 프레임 관절 위치
-            J[:3, i] = np.cross(n_i, ee_pos - p_i)  # 이동 기여: n × (p_ee - p_i)
-            J[3:, i] = n_i                    # 회전 기여 (ori)
-        return J
-
     def _solve_ik_position(
         self, 
         target_pos: np.ndarray, 
@@ -262,9 +227,6 @@ class ArmController:
             target_mat = ik_data.site_xmat[self.ee_site_id].copy().reshape(3, 3)
         else:
             target_mat = R.from_euler("xyz", target_ori).as_matrix()
-
-        # --- Dual Quaternion 기반 오차 계산 ---
-        dq_target = _mat_pos_to_dq(target_mat, target_pos)
 
         q_safe = q.copy()
         for _ in range(max_iterations):
@@ -300,38 +262,6 @@ class ArmController:
             q = np.clip(q, RobotConfig.ARM_JOINT_LIMITS[:, 0], RobotConfig.ARM_JOINT_LIMITS[:, 1])
 
         return False, q
-
-    def _check_trajectory_collision(self, q_target: np.ndarray, n_steps: int = 20) -> bool:
-        """현재 관절각 → q_target 까지 선형 보간한 궤적 전체에서 cross-arm 충돌 체크.
-
-        Returns:
-            True  — 궤적 중 충돌 구간 존재
-            False — 궤적 전체 안전
-        """
-        if self._other_arm is None:
-            return False
-
-        q_curr = self.get_arm_joint_position()
-        traj_data = mujoco.MjData(self.model)
-
-        for step in range(1, n_steps + 1):   # step=0(현재 위치)은 이미 안전하다고 가정
-            t = step / n_steps
-            q_interp = (1.0 - t) * q_curr + t * q_target
-
-            traj_data.qpos[:] = self.data.qpos[:]   # 상대 팔 현재 상태 유지
-            for i, joint_id in enumerate(self.arm_joint_ids):
-                traj_data.qpos[self.model.jnt_qposadr[joint_id]] = q_interp[i]
-
-            mujoco.mj_forward(self.model, traj_data)
-
-            if self._has_cross_arm_collision(traj_data):
-                q_interp_deg = np.round(np.degrees(q_interp), 1)
-                print(f"  [{self._arm_prefix.strip('/')}] 궤적 충돌 감지 "
-                      f"step={step}/{n_steps} (t={t:.2f}) "
-                      f"q={q_interp_deg}")
-                return True   # 궤적 중 충돌
-
-        return False   # 안전
 
     def set_ee_target_position(self, target_pos: np.ndarray, target_ori: Optional[np.ndarray] = None) -> Tuple[bool, np.ndarray]:
         success, joint_angles = self._solve_ik_position(target_pos, target_ori=target_ori)
@@ -491,8 +421,6 @@ class ArmController:
         Returns:
             (leader 성공, follower 성공)
         """
-        from scipy.spatial.transform import Rotation as R
-
         # leader IK
         if verbose: print("  [bimanual] Leader arm solving IK...")
         success_leader, _ = self.set_ee_target_position(target_pos, target_ori=target_ori)
