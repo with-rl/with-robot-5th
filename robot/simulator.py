@@ -95,7 +95,7 @@ class RobotConfig:
 class MujocoSimulator:
     """MuJoCo simulator with PD-controlled mobile base position tracking."""
 
-    def __init__(self, xml_path: str = "../model/robocasa/site.xml") -> None:
+    def __init__(self, xml_path: str = "../model/aloha/site.xml") -> None:
         """Initialize simulator with MuJoCo model and control indices."""
         self.model = mujoco.MjModel.from_xml_path(xml_path)
         self.data  = mujoco.MjData(self.model)

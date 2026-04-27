@@ -1,4 +1,5 @@
 import sys
+import math
 import cv2
 import requests
 import base64
@@ -40,6 +41,7 @@ DEPTH_MIN_M = 0.1
 DEPTH_MAX_M = 5.0
 
 GRID_SIZE = 0.1  # voxel 크기 (m)
+L_OCC = math.log(0.7 / 0.3)  # ≈ 0.847: hit 시 log-odds 증가량
 
 
 # ============================================================
@@ -99,7 +101,7 @@ class GridMap3D:
 
     def __init__(self, grid_size: float = GRID_SIZE):
         self.grid_size = grid_size
-        self.voxels: dict = {}  # (ix, iy, iz) → hit count
+        self.voxels: dict = {}  # (ix, iy, iz) → log-odds (float)
 
     def update(self, depth_mm: np.ndarray, robot_pose: np.ndarray) -> int:
         """새 depth 프레임으로 map 갱신. 추가된 포인트 수 반환."""
@@ -111,7 +113,7 @@ class GridMap3D:
         # numpy로 중복 집계하여 Python loop 제거
         unique_idx, counts = np.unique(indices, axis=0, return_counts=True)
         for idx, cnt in zip(map(tuple, unique_idx), counts):
-            self.voxels[idx] = self.voxels.get(idx, 0) + int(cnt)
+            self.voxels[idx] = self.voxels.get(idx, 0.0) + L_OCC * int(cnt)
         return len(pts_cam)
 
     def save(self, path: str = "grid_3d_map.npy"):
@@ -128,12 +130,12 @@ class GridMap3D:
 
     def stats(self):
         total = len(self.voxels)
-        hits = sum(self.voxels.values())
-        print(f"[GridMap3D] voxels={total}, total_hits={hits}, grid_size={self.grid_size}m")
+        max_l = max(self.voxels.values(), default=0.0)
+        print(f"[GridMap3D] voxels={total}, max_log_odds={max_l:.2f}, grid_size={self.grid_size}m")
 
-    def visualize_topdown(self, min_hits: int = 2):
+    def visualize_topdown(self, min_log_odds: float = L_OCC*2):
         """XY 평면 top-down 2D occupancy 시각화."""
-        occupied = [k for k, v in self.voxels.items() if v >= min_hits]
+        occupied = [k for k, v in self.voxels.items() if v >= min_log_odds]
         if not occupied:
             print("[GridMap3D] 표시할 voxel 없음")
             return
@@ -148,9 +150,9 @@ class GridMap3D:
         plt.tight_layout()
         plt.show()
 
-    def visualize_3d(self, min_hits: int = 2, max_points: int = 50_000):
+    def visualize_3d(self, min_log_odds: float = L_OCC*2, max_points: int = 50_000):
         """Open3D VoxelGrid 시각화 (0.1m 큐브)."""
-        occupied = [k for k, v in self.voxels.items() if v >= min_hits]
+        occupied = [k for k, v in self.voxels.items() if v >= min_log_odds]
         if not occupied:
             print("[GridMap3D] 표시할 voxel 없음")
             return

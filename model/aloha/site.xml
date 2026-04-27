@@ -150,9 +150,9 @@
   <include file="aloha_mobile.xml"/>
   
   <!-- Movable Objects -->
-  <include file="../robocasa/geom_objects.xml"/>
+  <!-- <include file="../robocasa/geom_objects.xml"/>
   <include file="../robocasa/objects/bowl_0.xml"/>
-  <include file="../robocasa/objects/bowl_7.xml"/>
+  <include file="../robocasa/objects/bowl_7.xml"/> -->
   <!-- <include file="objects/bagged_food_7.xml"/> -->
   <!-- <include file="objects/fork_7.xml"/> -->
   <!-- <include file="objects/mug_15.xml"/> -->
